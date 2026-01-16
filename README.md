@@ -1,10 +1,10 @@
 # go-datagrams
 
-A Go library for sending and receiving I2P datagrams using UDP packet framing over I2CP.
+A Go library for sending and receiving I2P datagrams over I2CP.
 
 ## Overview
 
-`go-datagrams` provides a stateless, port-based messaging layer for I2P applications. It wraps I2CP datagram sessions with UDP packet construction via `github.com/soypat/seqs`, implementing Go's standard `net.PacketConn` interface for compatibility with existing networking code.
+`go-datagrams` provides a stateless, port-based messaging layer for I2P applications. It wraps I2CP datagram sessions, implementing Go's standard `net.PacketConn` interface for compatibility with existing networking code.
 
 **Key Features:**
 
@@ -25,7 +25,6 @@ go get github.com/go-i2p/go-datagrams
 - Go 1.21+
 - Access to an I2P router with I2CP enabled
 - `github.com/go-i2p/go-i2cp` for I2CP transport
-- `github.com/soypat/seqs` for UDP packet framing
 
 ## Quick Start
 
@@ -93,7 +92,6 @@ I2P supports multiple datagram types with different trade-offs:
 
 - **Maximum I2CP datagram**: ~31KB (nominal 64KB minus overhead)
 - **Recommended maximum**: 8-10KB for reliable delivery
-- **UDP header overhead**: 8 bytes
 
 I2NP messages are fragmented into 1KB tunnel messages. Larger datagrams have exponentially higher drop probability due to fragmentation.
 
@@ -113,7 +111,6 @@ conn.RegisterPort(8080, func(payload []byte, from i2cp.Destination) {
 Following the patterns from [copilot-instructions.md](.github/copilot-instructions.md):
 
 - **Stateless operation**: No connection state tracking (matches I2CP datagram semantics)
-- **UDP framing**: Uses `seqs.UDPHeader` for packet construction/parsing
 - **Standard interfaces**: Implements `net.PacketConn` and `net.Addr`
 - **Thread safety**: All operations are safe for concurrent use
 - **No IP assumptions**: Works with I2P destinations, not IP addresses
@@ -135,7 +132,6 @@ Applications requiring reliability must implement it at the application layer (A
 - [Implementation Roadmap (ROADMAP.md)](ROADMAP.md) - Development plan and design decisions
 - [I2P Datagram API Overview](https://geti2p.net/en/docs/api/datagrams)
 - [go-i2cp Documentation](https://github.com/go-i2p/go-i2cp)
-- [seqs Documentation](https://github.com/soypat/seqs)
 
 ## License
 
