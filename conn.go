@@ -598,7 +598,7 @@ func (d *DatagramConn) parseEnvelope(msg *receivedDatagram, protocol uint8) ([]b
 		return msg.payload, msg.from, msg.srcPort, nil
 
 	case ProtocolDatagram3:
-		// Datagram3: fromhash(32) + flags(2) + payload
+		// Datagram3: fromhash(32) + flags(2) + [options] + payload
 		// See SPEC.md for format details
 		if len(msg.payload) < 34 {
 			return nil, nil, 0, fmt.Errorf("Datagram3 envelope too short: %d bytes", len(msg.payload))
@@ -621,13 +621,25 @@ func (d *DatagramConn) parseEnvelope(msg *receivedDatagram, protocol uint8) ([]b
 			return nil, nil, 0, fmt.Errorf("invalid Datagram3 version: 0x%x (expected 0x03)", version)
 		}
 
-		// Options parsing not yet implemented
+		// Start of payload (after fromhash + flags)
+		offset := 34
+
+		// Parse options if present (I2P Mapping format: 2-byte size + key=value; pairs)
 		if hasOptions {
-			return nil, nil, 0, fmt.Errorf("Datagram3 with options not yet implemented")
+			if len(msg.payload)-offset < 2 {
+				return nil, nil, 0, fmt.Errorf("Datagram3 envelope too short for options size field")
+			}
+			opts, optLen, optErr := OptionsFromBytes(msg.payload[offset:])
+			if optErr != nil {
+				return nil, nil, 0, fmt.Errorf("Datagram3 failed to parse options: %w", optErr)
+			}
+			offset += optLen
+			// Options are parsed but not exposed in return value (could be added later)
+			_ = opts
 		}
 
-		// Extract payload (everything after 34 bytes)
-		payload := msg.payload[34:]
+		// Extract payload (everything after offset)
+		payload := msg.payload[offset:]
 
 		// For now, create a minimal destination wrapper with just the hash
 		// In a real implementation, we'd need to look up the full destination
@@ -754,16 +766,23 @@ func parseDatagram1Envelope(data []byte, session I2CPSession) (payload []byte, f
 }
 
 // buildDatagram2Envelope constructs a Datagram2 envelope with signature and replay prevention.
-// Format: from destination (391+ bytes wire format) + flags (2 bytes) + payload + signature (64 bytes)
+// Format: from destination (391+ bytes wire format) + flags (2 bytes) + [options] + payload + signature (64 bytes)
 //
-// The signature is computed over: target_dest_hash (32 bytes, not in datagram) + flags + payload
+// The signature is computed over: target_dest_hash (32 bytes, not in datagram) + flags + [options] + payload
 //
 // Per I2P specification, the target destination hash provides replay prevention - the same
 // signed payload sent to different destinations will have different valid signatures.
 //
-// This implementation supports basic Datagram2 without options or offline signatures.
+// This implementation supports Datagram2 with optional options (I2P Mapping format).
+// Options may be nil or empty for datagrams without options.
 // Returns the complete envelope or an error if signing fails.
 func buildDatagram2Envelope(payload []byte, session I2CPSession, targetDestHash [32]byte) ([]byte, error) {
+	return buildDatagram2EnvelopeWithOptions(payload, session, targetDestHash, nil)
+}
+
+// buildDatagram2EnvelopeWithOptions constructs a Datagram2 envelope with optional options field.
+// Options may be nil or empty to omit the options field.
+func buildDatagram2EnvelopeWithOptions(payload []byte, session I2CPSession, targetDestHash [32]byte, options *Options) ([]byte, error) {
 	// Get the session's signing key pair
 	keyPair, err := session.SigningKeyPair()
 	if err != nil {
@@ -784,24 +803,41 @@ func buildDatagram2Envelope(payload []byte, session I2CPSession, targetDestHash 
 	}
 	destBytes := destStream.Bytes()
 
-	// Build flags (2 bytes): version 0x02, no options, no offline signature
+	// Build flags (2 bytes): version 0x02, options flag if options present
 	// Bit order: 15 14 ... 3 2 1 0
 	// Bits 3-0: Version = 0x02
-	// Bit 4: Options flag = 0 (no options)
-	// Bit 5: Offline signature flag = 0 (no offline sig)
-	flags := []byte{0x00, 0x02} // high byte = 0, low byte = version 0x02
+	// Bit 4: Options flag = 1 if options present
+	// Bit 5: Offline signature flag = 0 (not supported for sending)
+	lowFlags := byte(0x02) // version 0x02
+	var optionsBytes []byte
+	if options != nil && !options.IsEmpty() {
+		lowFlags |= 0x10 // set options flag
+		var optErr error
+		optionsBytes, optErr = options.Bytes()
+		if optErr != nil {
+			return nil, fmt.Errorf("failed to serialize options: %w", optErr)
+		}
+	}
+	flags := []byte{0x00, lowFlags} // high byte = 0, low byte = version + flags
 
-	// Build data to sign: targetDestHash + flags + payload
+	// Build data to sign: targetDestHash + flags + options + payload
 	// Per spec: "The signature is over the following fields:
 	// 1. Prelude: The 32-byte hash of the target destination (not included in the datagram)
 	// 2. flags
-	// 3. options (if present) - not present in this implementation
+	// 3. options (if present)
 	// 4. offline_signature (if present) - not present in this implementation
 	// 5. payload"
-	toSign := make([]byte, 32+2+len(payload))
-	copy(toSign[0:32], targetDestHash[:])
-	copy(toSign[32:34], flags)
-	copy(toSign[34:], payload)
+	toSign := make([]byte, 32+2+len(optionsBytes)+len(payload))
+	offset := 0
+	copy(toSign[offset:], targetDestHash[:])
+	offset += 32
+	copy(toSign[offset:], flags)
+	offset += 2
+	if len(optionsBytes) > 0 {
+		copy(toSign[offset:], optionsBytes)
+		offset += len(optionsBytes)
+	}
+	copy(toSign[offset:], payload)
 
 	// Sign with Ed25519 (always signs directly, not the hash)
 	signature, err := keyPair.Sign(toSign)
@@ -809,26 +845,34 @@ func buildDatagram2Envelope(payload []byte, session I2CPSession, targetDestHash 
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
 
-	// Build envelope: destination + flags + payload + signature
+	// Build envelope: destination + flags + options + payload + signature
 	// Note: signature is at the END for Datagram2 (unlike Datagram1 where it's in the middle)
-	envelope := make([]byte, len(destBytes)+2+len(payload)+len(signature))
-	offset := 0
-	copy(envelope[offset:], destBytes)
-	offset += len(destBytes)
-	copy(envelope[offset:], flags)
-	offset += 2
-	copy(envelope[offset:], payload)
-	offset += len(payload)
-	copy(envelope[offset:], signature)
+	envelope := make([]byte, len(destBytes)+2+len(optionsBytes)+len(payload)+len(signature))
+	envOffset := 0
+	copy(envelope[envOffset:], destBytes)
+	envOffset += len(destBytes)
+	copy(envelope[envOffset:], flags)
+	envOffset += 2
+	if len(optionsBytes) > 0 {
+		copy(envelope[envOffset:], optionsBytes)
+		envOffset += len(optionsBytes)
+	}
+	copy(envelope[envOffset:], payload)
+	envOffset += len(payload)
+	copy(envelope[envOffset:], signature)
 
 	return envelope, nil
 }
 
 // parseDatagram2Envelope extracts and verifies a Datagram2 envelope with replay prevention.
-// Format: from destination (391+ bytes wire format) + flags (2 bytes) + payload + signature (64 bytes)
+// Format: from destination (391+ bytes wire format) + flags (2 bytes) + [options] + [offline_sig] + payload + signature (64 bytes)
 //
 // The signature must verify against: receiver_dest_hash + flags + options + offline_sig + payload
 // This provides replay prevention - datagrams sent to different destinations will fail verification.
+//
+// Optional fields:
+//   - Options: I2P Mapping format when HEADER_OPTIONS flag (bit 4) is set
+//   - Offline Signature: OfflineSignature block when HEADER_OFFLINE_SIG flag (bit 5) is set
 //
 // Returns the payload, from destination, and any error (including signature verification failure).
 func parseDatagram2Envelope(data []byte, session I2CPSession) (payload []byte, from *i2cp.Destination, err error) {
@@ -872,14 +916,52 @@ func parseDatagram2Envelope(data []byte, session I2CPSession) (payload []byte, f
 
 	offset := destLen + 2
 
-	// Parse options if present (not implemented yet)
+	// Track optional field bytes for signature verification
+	var optionsBytes []byte
+	var offlineSigBytes []byte
+
+	// Parse options if present (I2P Mapping format: 2-byte size + key=value; pairs)
 	if hasOptions {
-		return nil, nil, fmt.Errorf("Datagram2 with options not yet implemented")
+		if len(data)-offset < 2 {
+			return nil, nil, fmt.Errorf("Datagram2 envelope too short for options size field")
+		}
+		opts, optLen, optErr := OptionsFromBytes(data[offset:])
+		if optErr != nil {
+			return nil, nil, fmt.Errorf("Datagram2 failed to parse options: %w", optErr)
+		}
+		// Store the raw options bytes for signature verification
+		optionsBytes = data[offset : offset+optLen]
+		offset += optLen
+		// Options are parsed but not exposed in return value (could be added later)
+		_ = opts
 	}
 
-	// Parse offline signature if present (not implemented yet)
+	// Parse offline signature if present
+	// Format: expires(4) + sigtype(2) + transient_public_key(variable) + signature(variable)
 	if hasOfflineSig {
-		return nil, nil, fmt.Errorf("Datagram2 with offline signature not yet implemented")
+		// Need to know the destination's signature type for offline sig parsing
+		// Ed25519 (sigtype 7) is the default for go-i2cp destinations
+		destSigType := uint16(7) // Ed25519
+
+		offlineSig, offLen, offErr := OfflineSignatureFromBytes(data[offset:], destSigType)
+		if offErr != nil {
+			return nil, nil, fmt.Errorf("Datagram2 failed to parse offline signature: %w", offErr)
+		}
+
+		// Check if the offline signature has expired
+		if offlineSig.IsExpired() {
+			return nil, nil, fmt.Errorf("Datagram2 offline signature has expired (expired at %s)", offlineSig.Expires)
+		}
+
+		// Store the raw offline signature bytes for signature verification
+		offlineSigBytes = data[offset : offset+offLen]
+		offset += offLen
+
+		// Note: In a full implementation, we would:
+		// 1. Verify the offline signature against the destination's public key
+		// 2. Use the transient key for payload signature verification instead of the destination key
+		// For now, we just parse and validate expiration
+		_ = offlineSig
 	}
 
 	// Remaining data: payload + signature
@@ -907,14 +989,28 @@ func parseDatagram2Envelope(data []byte, session I2CPSession) (payload []byte, f
 	}
 	localDestHash := sha256.Sum256(localDestStream.Bytes())
 
-	// Build data that was signed: targetDestHash + flags + payload
-	// (options and offline_sig would be included here if present)
-	toVerify := make([]byte, 32+2+len(payload))
-	copy(toVerify[0:32], localDestHash[:])
-	copy(toVerify[32:34], flags)
-	copy(toVerify[34:], payload)
+	// Build data that was signed: targetDestHash + flags + options + offline_sig + payload
+	// Per I2P spec, signature covers all fields in order
+	toVerifyLen := 32 + 2 + len(optionsBytes) + len(offlineSigBytes) + len(payload)
+	toVerify := make([]byte, toVerifyLen)
+	verifyOffset := 0
+	copy(toVerify[verifyOffset:], localDestHash[:])
+	verifyOffset += 32
+	copy(toVerify[verifyOffset:], flags)
+	verifyOffset += 2
+	if len(optionsBytes) > 0 {
+		copy(toVerify[verifyOffset:], optionsBytes)
+		verifyOffset += len(optionsBytes)
+	}
+	if len(offlineSigBytes) > 0 {
+		copy(toVerify[verifyOffset:], offlineSigBytes)
+		verifyOffset += len(offlineSigBytes)
+	}
+	copy(toVerify[verifyOffset:], payload)
 
 	// Verify signature using the sender's destination public key
+	// Note: If offline signature is present, we should use the transient key instead
+	// This is a simplification - full implementation would use transient key when available
 	if !from.VerifySignature(toVerify, signature) {
 		return nil, nil, fmt.Errorf("Datagram2 signature verification failed (possible replay attack or wrong recipient)")
 	}
