@@ -194,6 +194,24 @@ func TestNewDatagramConnWithProtocol(t *testing.T) {
 	}
 }
 
+// TestNewDatagramConnWithProtocol_StreamingRejected verifies that protocol 6 (streaming)
+// is rejected. Per I2P specification, protocol 6 is reserved for I2P streaming and
+// cannot be used for datagrams.
+func TestNewDatagramConnWithProtocol_StreamingRejected(t *testing.T) {
+	session := newMockSession()
+	conn, err := NewDatagramConnWithProtocol(session, 8080, ProtocolStreaming)
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("NewDatagramConnWithProtocol() should reject protocol 6 (streaming)")
+	}
+
+	// Verify error message mentions protocol 6 and streaming
+	if !strings.Contains(err.Error(), "6") || !strings.Contains(err.Error(), "streaming") {
+		t.Errorf("error message should mention protocol 6 and streaming, got: %v", err)
+	}
+}
+
 // TestDatagramConn_Close verifies connection close behavior.
 func TestDatagramConn_Close(t *testing.T) {
 	session := newMockSession()
@@ -701,9 +719,9 @@ func TestMaxPayloadSize(t *testing.T) {
 		want     int
 	}{
 		{"Raw", ProtocolRaw, MaxI2NPSize},
-		{"Datagram3", ProtocolDatagram3, MaxI2NPSize - 34},
-		{"Datagram1", ProtocolDatagram1, MaxI2NPSize - 427},
-		{"Datagram2", ProtocolDatagram2, MaxI2NPSize - 433},
+		{"Datagram3", ProtocolDatagram3, MaxI2NPSize - Datagram3Overhead},
+		{"Datagram1", ProtocolDatagram1, MaxI2NPSize - Datagram1Overhead},
+		{"Datagram2", ProtocolDatagram2, MaxI2NPSize - Datagram2Overhead},
 	}
 
 	for _, tt := range tests {

@@ -43,6 +43,12 @@ var _ I2CPSession = (*i2cp.Session)(nil)
 // Protocol numbers for I2P datagram types as defined in the I2P specification.
 // See SPEC.md for detailed format specifications.
 const (
+	// ProtocolStreaming (6) is reserved for I2P streaming protocol.
+	// This protocol number MUST NOT be used for datagrams.
+	// Per I2P specification: "any other protocol numbers may be used other
+	// than the streaming protocol number (6)".
+	ProtocolStreaming uint8 = 6
+
 	// ProtocolRaw (18) is for non-repliable, non-authenticated datagrams.
 	// Zero overhead, highest performance. Use for trusted peers or when
 	// authentication is handled at the application layer.
@@ -66,6 +72,8 @@ const (
 // Size constants for I2P datagrams.
 const (
 	// MaxI2NPSize is the nominal maximum size for I2NP messages including datagrams.
+	// Per I2P specification, this is 64KB but actual limits may be slightly less
+	// due to I2CP gzip header (~10 bytes) and garlic message overhead.
 	MaxI2NPSize = 64 * 1024 // 64 KB
 
 	// RecommendedMaxSize is the recommended maximum payload size for reliable delivery.
@@ -76,6 +84,27 @@ const (
 	// OptimalMaxSize is the optimal payload size for best reliability.
 	// Keeping messages small reduces fragmentation and improves delivery probability.
 	OptimalMaxSize = 4 * 1024 // 4 KB
+
+	// Ed25519SignatureLength is the fixed signature length for Ed25519 (64 bytes).
+	// go-i2cp exclusively uses Ed25519, so this is constant.
+	Ed25519SignatureLength = 64
+
+	// Ed25519DestinationSize is the wire format size for an Ed25519 destination.
+	// Wire format: pubKey(256) + signingPubKey(128) + certificate(7) = 391 bytes
+	// Note: The I2P spec says "387+" for serialized format, but wire format is 391+.
+	Ed25519DestinationSize = 391
+
+	// Datagram1Overhead is the envelope overhead for Datagram1 with Ed25519.
+	// destination(391) + signature(64) = 455 bytes
+	Datagram1Overhead = Ed25519DestinationSize + Ed25519SignatureLength // 455
+
+	// Datagram2Overhead is the minimum envelope overhead for Datagram2 with Ed25519.
+	// destination(391) + flags(2) + signature(64) = 457 bytes (without options)
+	Datagram2Overhead = Ed25519DestinationSize + 2 + Ed25519SignatureLength // 457
+
+	// Datagram3Overhead is the envelope overhead for Datagram3.
+	// fromhash(32) + flags(2) = 34 bytes
+	Datagram3Overhead = 32 + 2 // 34
 )
 
 // DatagramConn represents a stateless I2P datagram connection that wraps an I2CP session.
@@ -207,7 +236,7 @@ func NewDatagramConn(session I2CPSession, localPort uint16) (*DatagramConn, erro
 //   - session is nil
 //   - session is closed
 //   - session destination cannot be retrieved
-//   - protocol is invalid (though any uint8 is technically allowed)
+//   - protocol is ProtocolStreaming (6) which is reserved for streaming
 func NewDatagramConnWithProtocol(session I2CPSession, localPort uint16, protocol uint8) (*DatagramConn, error) {
 	if session == nil {
 		return nil, fmt.Errorf("session cannot be nil")
@@ -215,6 +244,13 @@ func NewDatagramConnWithProtocol(session I2CPSession, localPort uint16, protocol
 
 	if session.IsClosed() {
 		return nil, fmt.Errorf("session is closed")
+	}
+
+	// Protocol 6 is reserved for I2P streaming and must not be used for datagrams.
+	// Per I2P specification: "any other protocol numbers may be used other than
+	// the streaming protocol number (6)".
+	if protocol == ProtocolStreaming {
+		return nil, fmt.Errorf("protocol %d (streaming) is reserved and cannot be used for datagrams", protocol)
 	}
 
 	localDest := session.Destination()
@@ -377,29 +413,32 @@ func (d *DatagramConn) Session() I2CPSession {
 // MaxPayloadSize returns the maximum payload size for this connection's protocol type.
 // This accounts for protocol-specific overhead in the I2NP message.
 //
-// Protocol-specific limits:
-//   - Raw (18): ~64KB - minimal overhead
-//   - Datagram3 (20): ~64KB - 34 bytes (fromhash + flags)
-//   - Datagram1 (17): ~64KB - 427+ bytes (from dest + signature)
-//   - Datagram2 (19): ~64KB - 433+ bytes (from dest + flags + signature + options)
+// Protocol-specific limits (for Ed25519 destinations):
+//   - Raw (18): 64KB - no envelope overhead
+//   - Datagram3 (20): 64KB - 34 bytes (fromhash + flags)
+//   - Datagram1 (17): 64KB - 455 bytes (dest(391) + signature(64))
+//   - Datagram2 (19): 64KB - 457 bytes (dest(391) + flags(2) + signature(64))
 //
-// Note: For reliable delivery, limit payloads to ~10KB or less due to I2NP
-// fragmentation into 1KB tunnel messages. Drop probability increases exponentially
+// Note: The I2P spec uses "387+" for destination size (serialized format) and "40+"
+// for signature (DSA_SHA1). This library uses Ed25519 exclusively, so:
+//   - Destination wire format: 391 bytes (pubKey(256) + signingPubKey(128) + cert(7))
+//   - Signature: 64 bytes (Ed25519)
+//
+// For reliable delivery, limit payloads to RecommendedMaxSize (~10KB) or less due to
+// I2NP fragmentation into 1KB tunnel messages. Drop probability increases exponentially
 // with message size.
 func (d *DatagramConn) MaxPayloadSize() int {
-	const maxI2NPSize = 64 * 1024 // 64 KB nominal I2NP message limit
-
 	switch d.protocol {
 	case ProtocolRaw:
-		return maxI2NPSize // No overhead for raw datagrams
+		return MaxI2NPSize // No overhead for raw datagrams
 	case ProtocolDatagram3:
-		return maxI2NPSize - 34 // fromhash(32) + flags(2)
+		return MaxI2NPSize - Datagram3Overhead // fromhash(32) + flags(2) = 34
 	case ProtocolDatagram1:
-		return maxI2NPSize - 427 // from dest(387) + signature(40+)
+		return MaxI2NPSize - Datagram1Overhead // dest(391) + signature(64) = 455
 	case ProtocolDatagram2:
-		return maxI2NPSize - 433 // from dest(387) + flags(2) + signature(40+) + minimal options
+		return MaxI2NPSize - Datagram2Overhead // dest(391) + flags(2) + signature(64) = 457
 	default:
-		return maxI2NPSize // Conservative fallback
+		return MaxI2NPSize // Conservative fallback
 	}
 }
 
@@ -670,12 +709,8 @@ func (d *DatagramConn) parseEnvelope(msg *receivedDatagram, protocol uint8) ([]b
 	}
 }
 
-// Ed25519SignatureLength is the fixed signature length for Ed25519 (64 bytes).
-// go-i2cp exclusively uses Ed25519, so this is constant.
-const Ed25519SignatureLength = 64
-
 // buildDatagram1Envelope constructs a Datagram1 envelope with signature.
-// Format: from destination (387+ bytes) + signature (64 bytes for Ed25519) + payload
+// Format: from destination (391+ bytes wire format) + signature (64 bytes for Ed25519) + payload
 //
 // Per I2P specification:
 // - For DSA_SHA1 signature type (legacy): Signs the SHA-256 hash of the payload
@@ -738,10 +773,9 @@ func buildDatagram1Envelope(payload []byte, session I2CPSession) ([]byte, error)
 // The signature is verified using the sender's public key embedded in the destination.
 // Returns the payload, from destination, and any error (including signature verification failure).
 func parseDatagram1Envelope(data []byte, session I2CPSession) (payload []byte, from *i2cp.Destination, err error) {
-	// Minimum size: wire format destination (256+128+7 = 391 bytes) + Ed25519 signature (64 bytes)
-	const minSize = 391 + Ed25519SignatureLength
-	if len(data) < minSize {
-		return nil, nil, fmt.Errorf("Datagram1 envelope too short: %d bytes (need at least %d)", len(data), minSize)
+	// Minimum size: Ed25519DestinationSize (391) + Ed25519SignatureLength (64) = 455 bytes
+	if len(data) < Datagram1Overhead {
+		return nil, nil, fmt.Errorf("Datagram1 envelope too short: %d bytes (need at least %d)", len(data), Datagram1Overhead)
 	}
 
 	// Parse destination from the envelope using wire format reader
@@ -888,10 +922,9 @@ func buildDatagram2EnvelopeWithOptions(payload []byte, session I2CPSession, targ
 //
 // Returns the payload, from destination, and any error (including signature verification failure).
 func parseDatagram2Envelope(data []byte, session I2CPSession) (payload []byte, from *i2cp.Destination, err error) {
-	// Minimum size: wire format destination (391 bytes) + flags (2 bytes) + Ed25519 signature (64 bytes)
-	const minSize = 391 + 2 + Ed25519SignatureLength
-	if len(data) < minSize {
-		return nil, nil, fmt.Errorf("Datagram2 envelope too short: %d bytes (need at least %d)", len(data), minSize)
+	// Minimum size: Datagram2Overhead = Ed25519DestinationSize (391) + flags (2) + Ed25519SignatureLength (64) = 457 bytes
+	if len(data) < Datagram2Overhead {
+		return nil, nil, fmt.Errorf("Datagram2 envelope too short: %d bytes (need at least %d)", len(data), Datagram2Overhead)
 	}
 
 	// Parse destination from the envelope using wire format reader
