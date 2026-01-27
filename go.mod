@@ -1,6 +1,8 @@
 module github.com/go-i2p/go-datagrams
 
-go 1.24.4
+go 1.24.5
+
+toolchain go1.24.12
 
 require (
 	github.com/go-i2p/common v0.1.0
