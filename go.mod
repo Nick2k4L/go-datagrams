@@ -1,17 +1,17 @@
 module github.com/go-i2p/go-datagrams
 
-go 1.26.1
+go 1.26.3
 
 require (
-	github.com/go-i2p/common v0.1.55
+	github.com/go-i2p/common v0.1.56
 	github.com/go-i2p/go-i2cp v0.1.55
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/go-i2p/crypto v0.1.55 // indirect
-	github.com/go-i2p/logger v0.1.55 // indirect
+	github.com/go-i2p/crypto v0.1.56 // indirect
+	github.com/go-i2p/logger v0.1.56 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/samber/lo v1.53.0 // indirect
 	github.com/samber/oops v1.22.0 // indirect
