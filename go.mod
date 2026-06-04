@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/go-i2p/common v0.1.56
-	github.com/go-i2p/go-i2cp v0.1.55
+	github.com/go-i2p/go-i2cp v0.1.56
 )
 
 require (
