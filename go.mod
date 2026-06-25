@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/go-i2p/common v0.1.60000-0.20260612012818-ffa84716e922
-	github.com/go-i2p/go-i2cp v0.1.61
+	github.com/go-i2p/go-i2cp v0.1.60000-0.20260612013604-6be0e753d2c7
 )
 
 require (
@@ -18,7 +18,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	go.step.sm/crypto v0.84.0 // indirect
+	go.step.sm/crypto v0.84.1 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
