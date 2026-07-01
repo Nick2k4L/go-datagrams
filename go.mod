@@ -3,15 +3,15 @@ module github.com/go-i2p/go-datagrams
 go 1.26.3
 
 require (
-	github.com/go-i2p/common v0.1.60000-0.20260630222658-15751a11a45e
+	github.com/go-i2p/common v0.1.60000-0.20260701131656-2242deb3c69c
 	github.com/go-i2p/go-i2cp v0.1.60000-0.20260630224428-d27f0dc69875
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/go-i2p/crypto v0.1.60000-0.20260630222545-de94e58f0e78 // indirect
-	github.com/go-i2p/logger v0.1.60000-0.20260612012503-bec4044a2b0d // indirect
+	github.com/go-i2p/crypto v0.1.60000-0.20260701131646-150ebb601f17 // indirect
+	github.com/go-i2p/logger v0.1.60000-0.20260701131042-844a6cd1489b // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/samber/lo v1.53.0 // indirect
 	github.com/samber/oops v1.22.0 // indirect
